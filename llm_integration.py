@@ -1,11 +1,31 @@
+import os
 import google.generativeai as genai
+import base64
+import requests
+from PIL import Image
+import io
 
-# Replace with your actual Gemini API key
-genai.configure(api_key="AIzaSyCpM8r5L_r8NXfFgAqZ0N3q1k6tawER8lw")
+# Use an environment variable for the API key
+genai.configure(api_key=os.environ.get("AIzaSyCW2-UffAlgjKSOm7HpDzniDa2EhUaDDEY"))
+
+def solve_captcha_with_llm(captcha_src):
+    try:
+        # Use a different model, e.g., gemini-pro-vision
+        model = genai.GenerativeModel('gemini-pro-vision')
+        
+        # Generate content
+        response = model.generate_content([captcha_src, "What is the text in this CAPTCHA image?"])
+        
+        # Extract the CAPTCHA solution from the response
+        captcha_solution = response.text.strip()
+        
+        return captcha_solution
+    except Exception as e:
+        raise Exception(f"Error in CAPTCHA solving: {str(e)}")
 
 def analyze_content(content):
     try:
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         response = model.generate_content([
             "You are a helpful assistant that analyzes scientific content.",
             f"Analyze the following scientific content and provide a brief summary:\n\n{content}"
@@ -14,4 +34,3 @@ def analyze_content(content):
     except Exception as e:
         print(f"Error in content analysis: {str(e)}")
         return "Error occurred during content analysis"
-

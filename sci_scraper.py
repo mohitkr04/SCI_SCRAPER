@@ -9,65 +9,90 @@ import io
 from PIL import Image
 import pytesseract
 from bs4 import BeautifulSoup
-from llm_integration import analyze_content
+from llm_integration import analyze_content, solve_captcha_with_llm
+import requests
+import PyPDF2
 
 class SCIScraper:
     def __init__(self, url="https://www.sci.gov.in/case-status-diary-no/"):
         self.driver = webdriver.Chrome()
         self.url = url
+        self.api_url = "https://www.sci.gov.in/wp-admin/admin-ajax.php"
+        self.session = requests.Session()
         self.captcha_timeout = 20
 
-    def scrape_and_save(self, num_pages=5):
-        self.driver.get(self.url)
-        data = []
+    def scrape_and_save(self, start_diary_no, end_diary_no, year, output_file):
+        with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = ['Diary No', 'Year', 'Case No', 'Petitioner', 'Respondent', 'Pet. Advocate', 'Resp. Advocate', 'Last Listed On', 'Status', 'Last Order']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
 
-        for page in range(1, num_pages + 1):
-            try:
-                self.solve_and_submit_captcha()
+            data_found = False
+            for diary_no in range(start_diary_no, end_diary_no + 1):
+                print(f"Processing Diary No: {diary_no}")
+                captcha_solution = self.solve_and_submit_captcha()
+                json_data = self.fetch_data(diary_no, year, captcha_solution)
                 
-                # Wait for results and scrape data
-                results = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "cnrResultsDetails"))
-                )
+                if 'bt-content' in json_data:
+                    content = json_data['bt-content']
+                    case_details = self.extract_case_details(content)
+                    
+                    if case_details:
+                        data_found = True
+                        row = {
+                            'Diary No': diary_no,
+                            'Year': year,
+                            'Case No': case_details.get('Case No', ''),
+                            'Petitioner': case_details.get('Petitioner', ''),
+                            'Respondent': case_details.get('Respondent', ''),
+                            'Pet. Advocate': case_details.get('Pet. Advocate', ''),
+                            'Resp. Advocate': case_details.get('Resp. Advocate', ''),
+                            'Last Listed On': case_details.get('Last Listed On', ''),
+                            'Status': case_details.get('Status', ''),
+                            'Last Order': case_details.get('Last Order', '')
+                        }
+                        writer.writerow(row)
+                    else:
+                        print(f"No details found for Diary No: {diary_no}")
+                else:
+                    print(f"No data found for Diary No: {diary_no}")
 
-                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-                diary_entries = soup.find_all(class_="diary-entry")
-
-                for entry in diary_entries:
-                    details = self.extract_details(entry)
-                    data.append(details)
-
-                # Navigate to next page or break if no more pages
-                if not self.go_to_next_page():
-                    break
-
-            except TimeoutException:
-                print(f"Timeout on page {page}. Saving debug info and continuing...")
-                self.save_debug_info()
-                continue
-
-        self.save_to_csv(data)
+        if data_found:
+            print(f"Data saved to {output_file}")
+        else:
+            print("No data found for any of the specified diary numbers.")
 
     def solve_and_submit_captcha(self):
-        captcha_img = WebDriverWait(self.driver, self.captcha_timeout).until(
-            EC.presence_of_element_located((By.ID, "captcha_image"))
-        )
-        captcha_src = captcha_img.get_attribute('src')
-        captcha_solution = self.solve_captcha(captcha_src)
+        response = self.session.get(self.url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        captcha_img = soup.find('img', id='siwp_captcha_image_0')
+        captcha_src = captcha_img['src']
         
-        captcha_input = self.driver.find_element(By.ID, "captcha")
-        captcha_input.send_keys(captcha_solution)
+        try:
+            # Attempt to solve captcha using LLM
+            captcha_solution = solve_captcha_with_llm(captcha_src)
+        except Exception as e:
+            print(f"Error in CAPTCHA solving: {str(e)}")
+            print("Falling back to manual CAPTCHA input.")
+            captcha_solution = input("Please enter the CAPTCHA solution manually: ")
         
-        submit_button = self.driver.find_element(By.ID, "getDetails")
-        submit_button.click()
+        return captcha_solution
 
-    def solve_captcha(self, captcha_src):
-        import base64
-        img_data = base64.b64decode(captcha_src.split(',')[1])
-        img = Image.open(io.BytesIO(img_data))
-        img = img.convert('L').point(lambda x: 0 if x < 128 else 255, '1')
-        captcha_text = pytesseract.image_to_string(img, config='--psm 8 -c tessedit_char_whitelist=0123456789')
-        return ''.join(filter(str.isdigit, captcha_text))
+    def fetch_data(self, diary_no, year, captcha_solution):
+        params = {
+            'diary_no': diary_no,
+            'year': year,
+            'scid': '6wsamyv0cs7ifrwamoif0lvl0meds5lc71monzzh',  # This might need to be dynamically obtained
+            'tok_8e7180d3a2bc6bbc3147e43b0b4b82b1daebd789': '5936f5af4a9f6b1dc65bc57b528ec9b491f64077',  # This might need to be dynamically obtained
+            'siwp_captcha_value': captcha_solution,
+            'es_ajax_request': '1',
+            'submit': 'Search',
+            'action': 'get_daily_order_diary_no',
+            'language': 'en'
+        }
+        
+        response = self.session.get(self.api_url, params=params)
+        return response.json()
 
     def extract_details(self, entry):
         diary_no = entry.find(class_="diary_no").text.strip()
@@ -163,10 +188,26 @@ class SCIScraper:
         
         return data
 
+    def extract_pdf_content(self, pdf_url):
+        response = self.session.get(pdf_url)
+        pdf_content = io.BytesIO(response.content)
+        
+        pdf_reader = PyPDF2.PdfReader(pdf_content)
+        text_content = ""
+        for page in pdf_reader.pages:
+            text_content += page.extract_text()
+        
+        return text_content
+
+    def extract_case_details(self, content):
+        # Implement this function to extract case details from the content
+        pass
+
 # Usage
 if __name__ == "__main__":
     scraper = SCIScraper()
     try:
-        scraper.scrape_and_save(num_pages=5)
+        # Replace this line
+        scraper.scrape_and_save(start_diary_no=1, end_diary_no=5, year=2023, output_file='output.csv')
     finally:
         scraper.close()
