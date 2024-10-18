@@ -66,15 +66,33 @@ class SCIScraper:
         response = self.session.get(self.url)
         soup = BeautifulSoup(response.text, 'html.parser')
         captcha_img = soup.find('img', id='siwp_captcha_image_0')
-        captcha_src = captcha_img['src']
         
+        # Ensure the CAPTCHA image is found
+        if captcha_img:
+            # Get the CAPTCHA image source and replace "&amp;" with "&"
+            captcha_src = captcha_img['src'].replace("&amp;", "&")
+        else:
+            print("CAPTCHA image not found.")
+            return ""  # Handle the case where the CAPTCHA image is not found
+
         try:
             # Attempt to solve captcha using LLM
             captcha_solution = solve_captcha_with_llm(captcha_src)
+            # Fill the CAPTCHA input field with the solution
+            captcha_input = self.driver.find_element(By.ID, "siwp_captcha_value_0")
+            captcha_input.send_keys(captcha_solution)  # Fill the input field with the CAPTCHA solution
         except Exception as e:
             print(f"Error in CAPTCHA solving: {str(e)}")
             print("Falling back to manual CAPTCHA input.")
-            captcha_solution = input("Please enter the CAPTCHA solution manually: ")
+            
+            # Find the CAPTCHA input field and use the class
+            captcha_input = soup.find('input', class_='siwp-captcha-cntr')
+            if captcha_input:
+                captcha_solution = input("Please enter the CAPTCHA solution manually: ")
+                captcha_input.send_keys(captcha_solution)  # Fill the input field with the manually entered solution
+            else:
+                print("CAPTCHA input field not found. Please check the page structure.")
+                captcha_solution = ""  # Set to empty or handle as needed
         
         return captcha_solution
 
